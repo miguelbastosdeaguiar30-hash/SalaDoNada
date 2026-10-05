@@ -1,0 +1,21 @@
+{"rules":{"rooms":{"$room":{
+ ".read":"auth!=null",
+ "meta":{".write":"auth!=null && !data.exists() && newData.child('host').val()===auth.uid",
+  ".validate":"newData.hasChildren(['host','createdAt'])"},
+ "players":{"$uid":{".write":"auth!=null && auth.uid===$uid",
+  ".validate":"newData.hasChildren(['n','x','z','ry'])",
+  "n":{".validate":"newData.isString() && newData.val().length<=16"},
+  "x":{".validate":"newData.isNumber() && newData.val()>-200 && newData.val()<200"},
+  "z":{".validate":"newData.isNumber() && newData.val()>-200 && newData.val()<200"},
+  "y":{".validate":"newData.isNumber()"},"ry":{".validate":"newData.isNumber()"},
+  "c":{".validate":"newData.isString() && newData.val().length<=7"},
+  "e":{".validate":"newData.isString() && newData.val().length<=10"},
+  "f":{".validate":"newData.isNumber()"},"a":{".validate":"newData.isNumber()"},"fx":{".validate":"newData.isNumber()"},"car":{".validate":"newData.isNumber()"},
+  "$other":{".validate":"false"}}},
+ "cars":{"$i":{".write":"auth!=null",".validate":"newData.hasChildren(['x','z','ry'])",
+  "x":{".validate":"newData.isNumber()"},"z":{".validate":"newData.isNumber()"},"ry":{".validate":"newData.isNumber()"},"d":{".validate":"newData.isString()"},"$other":{".validate":"false"}}},
+ "boxes":{"$i":{".write":"auth!=null",".validate":"newData.hasChildren(['x','z'])",
+  "x":{".validate":"newData.isNumber()"},"z":{".validate":"newData.isNumber()"},"ry":{".validate":"newData.isNumber()"},"$other":{".validate":"false"}}},
+ "chat":{"$id":{".write":"auth!=null && !data.exists()",
+  ".validate":"newData.child('u').val()===auth.uid && newData.child('m').isString() && newData.child('m').val().length<=200 && newData.child('n').val().length<=16"}}
+}}}}

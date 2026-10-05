@@ -1,0 +1,149 @@
+import * as THREE from 'three';
+import * as F from './firebase.js';
+const { auth, db, rtdb } = F;
+const $ = id => document.getElementById(id);
+let user = null, profile = null, room = null, game = null;
+
+// ---------- AUTH ----------
+const msgs = { 'auth/invalid-credential':'E-mail ou senha incorretos.','auth/user-not-found':'Conta inexistente.','auth/wrong-password':'Senha incorreta.',
+ 'auth/email-already-in-use':'Esse e-mail já tem conta.','auth/weak-password':'Senha fraca (mín. 6).','auth/invalid-email':'E-mail inválido.','auth/too-many-requests':'Muitas tentativas. Espere um pouco.' };
+const showErr = (el, e) => { el.textContent = msgs[e.code] || e.message; };
+$('login').onclick = async () => { $('err').textContent=''; try { await F.signInWithEmailAndPassword(auth,$('email').value.trim(),$('pass').value); } catch(e){ showErr($('err'),e); } };
+$('signup').onclick = async () => {
+  $('err').textContent=''; const name = ($('uname').value.trim()||'Visitante'+Math.floor(Math.random()*999)).slice(0,16);
+  try {
+    const c = await F.createUserWithEmailAndPassword(auth,$('email').value.trim(),$('pass').value);
+    await F.setDoc(F.doc(db,'users',c.user.uid),{ uid:c.user.uid, username:name, coins:100, equippedColor:'#ff7a3d', createdAt:F.serverTimestamp(), lastLogin:F.serverTimestamp() });
+  } catch(e){ showErr($('err'),e); }
+};
+$('reset').onclick = async () => { try { await F.sendPasswordResetEmail(auth,$('email').value.trim()); $('err').textContent='Link de recuperação enviado (veja o spam).'; } catch(e){ showErr($('err'),e); } };
+$('out').onclick = () => F.signOut(auth);
+F.onAuthStateChanged(auth, async u => {
+  user = u; $('auth').classList.toggle('hidden', !!u); $('menu').classList.toggle('hidden', !u);
+  if (!u) return;
+  const ref = F.doc(db,'users',u.uid); let s = await F.getDoc(ref);
+  for (let i=0; !s.exists() && i<5; i++) { await new Promise(r=>setTimeout(r,500)); s = await F.getDoc(ref); } // aguarda criação no cadastro
+  profile = s.exists() ? s.data() : { username:'Visitante', coins:0, equippedColor:'#ff7a3d' };
+  if (s.exists()) F.updateDoc(ref,{ lastLogin:F.serverTimestamp() }).catch(()=>{});
+  $('hello').textContent = 'Oi, '+profile.username; $('coins').textContent = profile.coins+' MOEDAS (loja ainda não implementada)';
+  $('color').value = profile.equippedColor || '#ff7a3d';
+});
+$('color').onchange = () => { profile.equippedColor = $('color').value; F.updateDoc(F.doc(db,'users',user.uid),{ equippedColor:$('color').value }).catch(()=>{}); };
+
+// ---------- SALAS ----------
+const rand = () => { const a='ABCDEFGHJKMNPQRSTUVWXYZ23456789'; return Array.from({length:6},()=>a[Math.floor(Math.random()*a.length)]).join(''); };
+$('create').onclick = async () => {
+  try { const code = rand();
+    await F.set(F.ref(rtdb,`rooms/${code}/meta`),{ host:user.uid, createdAt:F.serverTimestamp() });
+    enter(code);
+  } catch(e){ $('merr').textContent = 'Erro ao criar sala: '+e.message; }
+};
+$('join').onclick = async () => {
+  const code = $('code').value.trim().toUpperCase();
+  try { const s = await F.get(F.ref(rtdb,`rooms/${code}/meta`));
+    if (!s.exists()) { $('merr').textContent='Sala inexistente.'; return; }
+    enter(code);
+  } catch(e){ $('merr').textContent = 'Erro: '+e.message; }
+};
+$('cp').onclick = () => navigator.clipboard?.writeText(room).then(()=>toast('Código copiado'));
+$('leave').onclick = async () => { await F.remove(F.ref(rtdb,`rooms/${room}/players/${user.uid}`)).catch(()=>{}); location.reload(); };
+function toast(t){ const el=$('toast'); el.textContent=t; el.classList.add('on'); clearTimeout(toast.t); toast.t=setTimeout(()=>el.classList.remove('on'),2200); }
+
+function enter(code) {
+  room = code; $('menu').classList.add('hidden'); $('hud').classList.remove('hidden'); $('rc').textContent = 'Sala '+code;
+  game = startGame(code);
+}
+
+// ---------- JOGO ----------
+const EMOTES = { '1':'wave','2':'laugh','3':'point','4':'dance' };
+const USELESS = [
+ ['BOTÃO ABSOLUTAMENTE IMPORTANTE','Nada aconteceu.'],['Não aperte.','...'],['Campainha','Ninguém veio.'],['Máquina de refrigerante','Sem troco. Sem refrigerante.'],
+ ['Televisão','Está passando o canal do Nada.'],['Interruptor','Click. A luz continua igual.'],['Telefone','Chamando... a linha é a Sala.'],['Lixeira','Já estava vazia. Agora também.'],
+ ['Micro-ondas','Plim! Dentro: nada, bem quentinho.'],['Placa','"Esta placa é uma placa."'],['Porta aleatória','Trancada. Do outro lado, nada.'],['Vaso','Uma planta fingindo ser útil.'] ];
+
+function startGame(code) {
+  const renderer = new THREE.WebGLRenderer({ canvas:$('c'), antialias:true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setSize(innerWidth,innerHeight); renderer.shadowMap.enabled = true;
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0xbfe6f2); scene.fog = new THREE.Fog(0xbfe6f2,40,110);
+  const cam = new THREE.PerspectiveCamera(65,innerWidth/innerHeight,.1,200);
+  scene.add(new THREE.HemisphereLight(0xffffff,0x88aa99,1.1));
+  const sun = new THREE.DirectionalLight(0xffffff,1.2); sun.position.set(20,30,10); sun.castShadow = true;
+  sun.shadow.camera.left=-40; sun.shadow.camera.right=40; sun.shadow.camera.top=40; sun.shadow.camera.bottom=-40; scene.add(sun);
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(60,48),new THREE.MeshStandardMaterial({color:0x8fd9a8})); ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; scene.add(ground);
+  const plaza = new THREE.Mesh(new THREE.CircleGeometry(9,40),new THREE.MeshStandardMaterial({color:0xfff3a8})); plaza.rotation.x=-Math.PI/2; plaza.position.y=.01; scene.add(plaza);
+  const solids = []; // {x,z,r}
+  const box = (w,h,d,x,z,col) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:col})); m.position.set(x,h/2,z); m.castShadow=m.receiveShadow=true; scene.add(m); return m; };
+  [[-22,-20,0xff9aa2],[22,-22,0xb5a6ff],[-26,16,0xffd37a],[25,18,0x7fd6b2]].forEach(([x,z,c])=>{ box(10,8,10,x,z,c); solids.push({x,z,r:7}); });
+  // objetos inúteis (clicáveis), em círculo ao redor da praça
+  const clickable = [];
+  USELESS.forEach((u,i) => { const a = i/USELESS.length*Math.PI*2, r = 13+(i%3)*3;
+    const m = box(1.4,1.4+(i%4)*.4,1.4,Math.cos(a)*r,Math.sin(a)*r,new THREE.Color().setHSL(i/12,.7,.6)); m.userData.u=u; clickable.push(m); solids.push({x:m.position.x,z:m.position.z,r:1.1}); });
+  // caixas empurráveis (física local; não sincronizadas)
+  const pushables = []; for (let i=0;i<10;i++){ const m = box(1.2,1.2,1.2,(Math.random()-.5)*14,(Math.random()-.5)*14,0xffffff*Math.random()); m.userData.v=new THREE.Vector3(); pushables.push(m); }
+
+  const makeChar = (color, name) => { const g = new THREE.Group(); const body = new THREE.Mesh(new THREE.SphereGeometry(.7,20,16),new THREE.MeshStandardMaterial({color}));
+    body.scale.set(1,1.15,1); body.position.y=.85; body.castShadow=true; g.add(body); g.userData.body=body;
+    const eyeM = new THREE.MeshBasicMaterial({color:0x1c2b36}); [-.22,.22].forEach(x=>{ const e=new THREE.Mesh(new THREE.SphereGeometry(.08,8,8),eyeM); e.position.set(x,1.05,.62); g.add(e); });
+    const cv = document.createElement('canvas'); cv.width=256; cv.height=64; const cx=cv.getContext('2d'); cx.font='bold 34px sans-serif'; cx.textAlign='center'; cx.fillStyle='#fff'; cx.strokeStyle='#1c2b36'; cx.lineWidth=6; cx.strokeText(name,128,44); cx.fillText(name,128,44);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),depthTest:false})); sp.scale.set(2.6,.65,1); sp.position.y=2.4; g.add(sp);
+    scene.add(g); return g; };
+
+  const me = makeChar(profile.equippedColor||'#ff7a3d', profile.username); me.position.set(0,0,5);
+  const st = { vy:0, yaw:0, camYaw:0, camPitch:.35, emote:'', et:0, emoteStart:0 };
+  const keys = {}; const remotes = new Map();
+
+  // entrada
+  addEventListener('keydown',e=>{ if (document.activeElement===$('msg')) { if (e.key==='Enter') send(); if (e.key==='Escape') $('msg').blur(); return; }
+    keys[e.code]=true; if (e.key==='Enter') { e.preventDefault(); $('msg').focus(); } if (EMOTES[e.key]) doEmote(EMOTES[e.key]); if (e.code==='KeyE') interact(); });
+  addEventListener('keyup',e=>keys[e.code]=false);
+  let drag=false; $('c').onpointerdown=e=>{ drag=true; }; addEventListener('pointerup',()=>drag=false);
+  addEventListener('pointermove',e=>{ if(!drag) return; st.camYaw-=e.movementX*.005; st.camPitch=Math.max(.05,Math.min(1.2,st.camPitch+e.movementY*.005)); });
+  const ray = new THREE.Raycaster();
+  $('c').onclick = e => { ray.setFromCamera({x:e.clientX/innerWidth*2-1,y:-(e.clientY/innerHeight)*2+1},cam); const h = ray.intersectObjects(clickable)[0]; if (h && h.distance<20) say(h.object.userData.u); };
+  const say = u => toast(u[0]+': '+u[1]);
+  function interact(){ let best=null,bd=3.5; clickable.forEach(m=>{ const d=m.position.distanceTo(me.position); if(d<bd){bd=d;best=m;} }); if(best) say(best.userData.u); }
+  document.querySelectorAll('#emotes button').forEach(b=>b.onclick=()=>doEmote(b.dataset.e));
+  let lastEmote=0; function doEmote(e){ const n=Date.now(); if(n-lastEmote<1200) return; lastEmote=n; st.emote=e; st.et=n; st.emoteStart=performance.now(); push(true); }
+  addEventListener('resize',()=>{ renderer.setSize(innerWidth,innerHeight); cam.aspect=innerWidth/innerHeight; cam.updateProjectionMatrix(); });
+
+  // rede: presença, jogadores, chat
+  const pRef = F.ref(rtdb,`rooms/${code}/players/${user.uid}`);
+  F.onValue(F.ref(rtdb,'.info/connected'),s=>{ if(s.val()){ F.onDisconnect(pRef).remove(); push(true); } }); // reconecta e reaplica presença
+  let lastSent=0, lastPos=''; function push(force){ const t=performance.now(); if(!force && t-lastSent<100) return;
+    const p=`${me.position.x.toFixed(1)},${me.position.z.toFixed(1)},${me.rotation.y.toFixed(2)},${me.position.y.toFixed(1)}`; if(!force && p===lastPos) return; lastPos=p; lastSent=t;
+    F.set(pRef,{ n:profile.username, c:profile.equippedColor||'#ff7a3d', x:+me.position.x.toFixed(2), y:+me.position.y.toFixed(2), z:+me.position.z.toFixed(2), ry:+me.rotation.y.toFixed(2), e:st.emote, et:st.et }).catch(()=>{}); }
+  F.onValue(F.ref(rtdb,`rooms/${code}/players`),snap=>{ const all=snap.val()||{}; $('pc').textContent=Object.keys(all).length+' na sala';
+    for (const [uid,p] of Object.entries(all)) { if(uid===user.uid) continue;
+      let r=remotes.get(uid); if(!r){ r={g:makeChar(p.c||'#999',p.n||'?'),tx:p.x,tz:p.z,ty:p.y||0,try:p.ry,et:0,start:0,e:''}; r.g.position.set(p.x,p.y||0,p.z); remotes.set(uid,r); }
+      r.tx=p.x; r.tz=p.z; r.ty=p.y||0; r.try=p.ry; if(p.et && p.et!==r.et){ r.et=p.et; r.e=p.e; r.start=performance.now(); } }
+    for (const [uid,r] of remotes) if(!all[uid]){ scene.remove(r.g); remotes.delete(uid); } });
+  const log=$('log'); let lastMsg=0;
+  F.onChildAdded(F.query(F.ref(rtdb,`rooms/${code}/chat`),F.limitToLast(30)),s=>{ const m=s.val(); const d=document.createElement('div');
+    const b=document.createElement('b'); b.textContent=m.n+': '; d.append(b,document.createTextNode(String(m.m))); log.append(d); log.scrollTop=log.scrollHeight; }); // textContent: sem XSS
+  function send(){ const t=$('msg').value.trim().slice(0,200); if(!t||Date.now()-lastMsg<1000) return; lastMsg=Date.now(); $('msg').value='';
+    F.push(F.ref(rtdb,`rooms/${code}/chat`),{ u:user.uid, n:profile.username, m:t, t:F.serverTimestamp() }).catch(()=>toast('Mensagem não enviada')); }
+
+  // animação de emote (local e remoto)
+  const anim = (g,e,t) => { const b=g.userData.body; b.rotation.set(0,0,0); b.position.y=.85; b.scale.set(1,1.15,1);
+    if(e==='wave') b.rotation.z=Math.sin(t*14)*.35; else if(e==='laugh') { b.position.y=.85+Math.abs(Math.sin(t*18))*.2; b.scale.y=1.15+Math.sin(t*18)*.08; }
+    else if(e==='point') b.rotation.x=-.4; else if(e==='dance') { b.rotation.y=t*8; b.position.y=.85+Math.abs(Math.sin(t*8))*.4; } };
+
+  let last=performance.now();
+  (function loop(now){ requestAnimationFrame(loop); const dt=Math.min((now-last)/1000,.05); last=now;
+    const sp=(keys.ShiftLeft?9:5), fx=(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0), fz=(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0);
+    if(fx||fz){ const a=st.camYaw, dx=(-Math.sin(a))*fx+Math.cos(a)*fz, dz=(-Math.cos(a))*fx-Math.sin(a)*fz, l=Math.hypot(dx,dz);
+      me.position.x+=dx/l*sp*dt; me.position.z+=dz/l*sp*dt; me.rotation.y=Math.atan2(dx,dz); if(st.emote){ st.emote=''; st.et=0; push(true); } } // andar interrompe a dança
+    st.vy-=25*dt; me.position.y+=st.vy*dt; if(me.position.y<=0){ me.position.y=0; st.vy=0; if(keys.Space) st.vy=9; }
+    const R=Math.hypot(me.position.x,me.position.z); if(R>58){ me.position.x*=58/R; me.position.z*=58/R; }
+    solids.forEach(s=>{ const dx=me.position.x-s.x,dz=me.position.z-s.z,d=Math.hypot(dx,dz),m=s.r+.7; if(d<m&&d>0){ me.position.x=s.x+dx/d*m; me.position.z=s.z+dz/d*m; } });
+    pushables.forEach(p=>{ const v=p.userData.v,dx=p.position.x-me.position.x,dz=p.position.z-me.position.z,d=Math.hypot(dx,dz);
+      if(d<1.4&&d>0&&me.position.y<1){ v.x+=dx/d*12*dt*sp; v.z+=dz/d*12*dt*sp; } p.position.x+=v.x*dt; p.position.z+=v.z*dt; v.multiplyScalar(.9); p.rotation.y+=v.x*dt*.3; });
+    if(st.emote) anim(me,st.emote,(now-st.emoteStart)/1000); else anim(me,'',0);
+    remotes.forEach(r=>{ const g=r.g; g.position.x+=(r.tx-g.position.x)*Math.min(1,dt*10); g.position.z+=(r.tz-g.position.z)*Math.min(1,dt*10); g.position.y+=(r.ty-g.position.y)*Math.min(1,dt*10);
+      let d=r.try-g.rotation.y; d=Math.atan2(Math.sin(d),Math.cos(d)); g.rotation.y+=d*Math.min(1,dt*10);
+      const el=(now-r.start)/1000; anim(g,(r.et&&r.e&&el<4)?r.e:'',el); });
+    push(false);
+    const cd=9, cp=st.camPitch; cam.position.set(me.position.x+Math.sin(st.camYaw)*cd*Math.cos(cp),me.position.y+2+cd*Math.sin(cp),me.position.z+Math.cos(st.camYaw)*cd*Math.cos(cp)); cam.lookAt(me.position.x,me.position.y+1.2,me.position.z);
+    renderer.render(scene,cam); })(last);
+  return {};
+}
